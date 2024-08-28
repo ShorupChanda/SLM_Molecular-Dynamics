@@ -1,0 +1,90 @@
+read_restart restart.1000000.invareq
+
+# ------------------------ FORCE FIELDS -----------------------------
+pair_style	    eam/alloy
+pair_coeff  	* * Fe-Ni.eam.alloy Fe Ni
+
+reset_timestep	0
+timestep        0.001
+thermo          1000
+# ------------------------- SETTINGS ---------------------------------
+
+print "################  EQUILIBRATING  ################"
+
+region      Boundary_atoms block INF INF INF INF 0 2 units box
+group       Boundary_atoms region Boundary_atoms
+region	    Thermostat_atoms block INF INF INF INF 2 6 units box
+group       Thermostat_atoms region Thermostat_atoms
+region	    Newton_atoms block INF INF INF INF 6 30 units box
+group       Newton_atoms region Newton_atoms
+region	    Sphere block INF INF INF INF 30 INF units box
+group       Sphere region Sphere
+group       Integration subtract all Boundary_atoms
+
+velocity    all create 300 12345
+fix         1 Integration nve
+fix         Boundary Boundary_atoms setforce 0.0 0.0 0.0
+fix         2 Thermostat_atoms langevin 300 300 0.1 12345
+fix         top all wall/reflect zhi EDGE
+
+# Computes
+compute     csym all centro/atom bcc
+compute     peratom all pe/atom 
+compute     keatom all ke/atom
+
+compute     RDF Sphere rdf 50
+fix         12 Sphere ave/time 100 1 100 c_RDF[*] file tmp.rdf mode vector
+
+#Von MIsses Stress analysis
+compute     1 all stress/atom NULL
+variable    1 atom C_1[1]
+variable    2 atom C_1[2]
+variable    3 atom C_1[3]
+variable    4 atom C_1[4]
+variable    5 atom C_1[5]
+variable    6 atom C_1[6]
+variable    vm atom "sqrt(0.5 * ( ((v_1-v_2)^2) + ((v_2-v_3)^2) + ((v_3-v_1)^2)) + 3*( ((v_4)^2) + ((v_5)^2) + ((v_6)^2)))"
+variable    hs atom "(v_1 + v_2 + v_3) / 3"
+
+# ------------------------ Laser Heating 1 ----------------------------
+variable    nsteps equal 600000 #40 m/s
+
+print "################   Laser Heating 1  ################"
+
+region      pow1 block 170 230 50 110 30 90  
+group       pow1 region pow1
+region      pow2 block 170 230 110 170 30 90 
+group       pow2 region pow2
+region      pow3 block 170 230 170 230 30 90 
+group       pow3 region pow3
+region      pow4 block 170 230 230 290 30 90 
+group       pow4 region pow4
+region      pow5 block 170 230 290 350 30 90 
+group       pow5 region pow5
+
+variable    dy1 equal (400)*(step)/(1000000)  # 40m/s
+region      mobcyl cylinder z 200 80 50 30 EDGE move NULL v_dy1 NULL
+group       mobile dynamic all region mobcyl every 1
+
+fix         laser all ehex 1 499.36 region mobcyl #80 uw power
+
+# Computes
+variable    Natoms equal count(mobile)
+compute     temp_0 mobile temp
+compute     centro mobile reduce ave x y z 
+
+compute     temp_1 pow1  temp 
+compute     temp_2 pow2  temp 
+compute     temp_3 pow3  temp 
+compute     temp_4 pow4  temp 
+compute     temp_5 pow5  temp 
+
+# Set thermo output
+thermo_style custom step pe press temp c_centro[1] c_centro[2] c_centro[3] v_Natoms v_dy1 c_temp_0 c_temp_1 c_temp_2 c_temp_3 c_temp_4 c_temp_5
+dump		 dump_solid all custom 100000 dump.*.laser id type x y z v_vm v_hs c_1[1] c_1[2] c_1[3] c_1[4] c_1[5] c_1[6] mass c_csym c_peratom c_keatom
+
+restart     100000 restart.*.invarlas
+
+run         ${nsteps}
+unfix       laser
+undump      dump_solid
